@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>microPeek control</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 10px 10px 40px; background: #000; color: #eee;
+         font: 15px -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 4px 0 8px; }
+  section { background: #1c1c1e; border-radius: 12px; padding: 10px; margin-bottom: 10px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; margin: 0 0 8px; }
+  button { font-size: 16px; padding: 10px 12px; border-radius: 10px; border: 0; background: #0a84ff; color: #fff; }
+  button.gray { background: #3a3a3c; }
+  button.red { background: #ff453a; }
+  button:disabled { opacity: .35; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+  .row > button { flex: 1; }
+  input[type=range] { flex: 1; min-width: 0; }
+  input[type=number] { width: 80px; font-size: 16px; padding: 6px; border-radius: 8px; border: 0;
+                       background: #2c2c2e; color: #fff; }
+  label { font-size: 14px; }
+  .val { width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+  #status { font-size: 13px; opacity: .85; min-height: 18px; }
+  pre { margin: 6px 0 0; font-size: 12px; white-space: pre-wrap; }
+  video { width: 100%; max-height: 40vh; background: #111; border-radius: 8px; object-fit: contain; }
+  #gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  #gallery figure { margin: 0; }
+  #gallery img { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 6px; }
+  #gallery figcaption { font-size: 10px; word-break: break-all; opacity: .7; }
+</style>
+</head>
+<body>
+<h1>microPeek control</h1>
+<div id="status">Not connected</div>
+
+<section>
+  <h2>Device</h2>
+  <div class="row">
+    <button id="connect">Connect microPeek</button>
+    <button id="disconnect" class="gray" disabled>Disconnect</button>
+  </div>
+  <div class="row"><label><input type="checkbox" id="showAll"> Show all Bluetooth devices</label></div>
+  <div id="model" class="row" style="opacity:.8">Model: - &nbsp;|&nbsp; Battery: -</div>
+  <pre id="info"></pre>
+  <div class="row"><button id="refresh" class="gray" disabled>Refresh info</button></div>
+</section>
+
+<section>
+  <h2>Lens (0-1023)</h2>
+  <div class="row">
+    <input type="range" id="vcm" min="0" max="1023" value="0" disabled>
+    <span class="val" id="vcmVal">0</span>
+  </div>
+  <div class="row">
+    <button class="gray step" data-d="-50" disabled>-50</button>
+    <button class="gray step" data-d="-10" disabled>-10</button>
+    <button class="gray step" data-d="-1" disabled>-1</button>
+    <button class="gray step" data-d="1" disabled>+1</button>
+    <button class="gray step" data-d="10" disabled>+10</button>
+    <button class="gray step" data-d="50" disabled>+50</button>
+  </div>
+</section>
+
+<section>
+  <h2>LEDs (0-255)</h2>
+  <div class="row"><label style="width:84px">Bright field</label><input type="range" id="bf" min="0" max="255" value="0" disabled><span class="val" id="bfVal">0</span></div>
+  <div class="row"><label style="width:84px">Dark field</label><input type="range" id="df" min="0" max="255" value="0" disabled><span class="val" id="dfVal">0</span></div>
+  <div class="row"><label style="width:84px">UV / 2nd</label><input type="range" id="uv" min="0" max="255" value="0" disabled><span class="val" id="uvVal">0</span></div>
+  <div class="row"><button id="ledsOff" class="gray" disabled>All LEDs off</button></div>
+</section>
+
+<section>
+  <h2>Camera</h2>
+  <video id="video" playsinline muted autoplay></video>
+  <div class="row">
+    <button id="camStart" class="gray">Start camera</button>
+    <button id="camFlip" class="gray">Front/Back</button>
+  </div>
+  <div class="row">
+    <button id="shoot" disabled>Take picture</button>
+    <button id="native" class="gray">Native camera (full quality)</button>
+  </div>
+  <input type="file" id="nativeInput" accept="image/*" capture="environment" hidden>
+</section>
+
+<section>
+  <h2>Focus stack (one picture per lens step)</h2>
+  <div class="row">
+    <label>From <input type="number" id="stFrom" value="0" min="0" max="1023"></label>
+    <label>To <input type="number" id="stTo" value="1023" min="0" max="1023"></label>
+  </div>
+  <div class="row">
+    <label>Step <input type="number" id="stStep" value="64" min="1" max="1023"></label>
+    <label>Settle ms <input type="number" id="stSettle" value="600" min="0" max="5000"></label>
+  </div>
+  <div class="row"><button id="stack" disabled>Start stack</button></div>
+</section>
+
+<section>
+  <h2>Pictures <span id="count"></span></h2>
+  <div class="row">
+    <button id="shareAll" class="gray" disabled>Save / share all</button>
+    <button id="clear" class="gray" disabled>Clear</button>
+  </div>
+  <div id="gallery"></div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const UUID = {
+  control: '9173514c-3bf9-a898-044a-cb8abac5f98f',
+  led: 'f2f5105d-c634-a4ac-0749-340d537e980a',
+  vcm: '5aa39d04-1a4b-b2ac-3643-98260731214c',
+  info: '06887caf-c975-5aa7-e240-ce9c99c8bd52',
+  fwId: 'a542eea5-cc43-3587-7742-451c16d680a3',
+  fwVer: '8d4fab79-74e4-4183-7245-194e686750b0',
+  batState: '27a724b1-41ed-5eb0-8a4c-1de4ff627d8a',
+  batDetails: '5a158f31-f78c-2f84-024f-2f76f9af8621',
+  selftest: '1ef7dc78-f2d4-5c80-9f40-620656d96866',
+};
+const NAME_PREFIXES = ['microPeek', 'uPeek', 'muPeek', 'μPeek'];
+const VCM_MAX = 1023;
+
+// <led-payload>
+// Same mapping as the official app: scale so the total is <= 255, compress, repeat each channel 4x.
+function ledPayload(bf, df, uv, white) {
+  if (white) uv = df;
+  const clamp = v => Math.min(Math.max(Math.trunc(v), 0), 255);
+  bf = clamp(bf); df = clamp(df); uv = clamp(uv);
+  const total = bf + df + uv;
+  let ch = [bf, df, uv];
+  if (total > 255) {
+    ch = ch.map(v => { const s = Math.trunc(255 * v / total); return (v > 0 && s <= 0) ? 1 : s; });
+  }
+  const curve = v => v < 64 ? v : v < 128 ? Math.trunc(v / 2) + 64 : v < 192 ? Math.trunc(v / 3) + 128 : Math.trunc(v / 4) + 192;
+  const out = new Uint8Array(12);
+  ch.forEach((v, i) => out.fill(curve(v), i * 4, i * 4 + 4));
+  return out;
+}
+// </led-payload>
+
+let device = null, chLed, chVcm, chFwId, chFwVer, chBat, chBatDet, chSelf;
+let white = false;
+const led = { bf: 0, df: 0, uv: 0 };
+let pending = {}, writing = false, stackRunning = false;
+let stream = null, facing = 'environment', wake = null;
+const gallery = [];
+
+const setStatus = t => $('status').textContent = t;
+const connected = () => !!(device && device.gatt && device.gatt.connected);
+
+function setBleControls(on) {
+  for (const id of ['vcm', 'bf', 'df', 'uv', 'ledsOff', 'refresh', 'disconnect']) $(id).disabled = !on;
+  document.querySelectorAll('.step').forEach(b => b.disabled = !on);
+  $('connect').disabled = on;
+  updateStackButton();
+}
+function updateStackButton() { $('stack').disabled = stackRunning ? false : !(connected() && stream); }
+
+async function write(ch, bytes) {
+  if (ch.writeValueWithResponse) await ch.writeValueWithResponse(bytes); else await ch.writeValue(bytes);
+}
+
+// Only the newest slider values are sent, so fast dragging never queues up writes.
+function setValue(key, value) {
+  pending[key] = value;
+  if (!writing) flush();
+}
+async function flush() {
+  writing = true;
+  try {
+    while (Object.keys(pending).length && connected()) {
+      const p = pending; pending = {};
+      if ('vcm' in p) {
+        const v = Math.min(Math.max(Math.trunc(p.vcm), 0), VCM_MAX);
+        await write(chVcm, new Uint8Array([v >> 8, v & 255]));
+      }
+      if ('bf' in p || 'df' in p || 'uv' in p) {
+        for (const k of ['bf', 'df', 'uv']) if (k in p) led[k] = p[k];
+        await write(chLed, ledPayload(led.bf, led.df, led.uv, white));
+      }
+    }
+  } catch (e) {
+    setStatus('Write failed: ' + e.message);
+  } finally {
+    writing = false;
+  }
+}
+async function writesDone() { while (writing) await sleep(20); }
+
+function setLens(v, moveSlider = true) {
+  v = Math.min(Math.max(Math.trunc(v), 0), VCM_MAX);
+  if (moveSlider) $('vcm').value = v;
+  $('vcmVal').textContent = v;
+  if (connected()) setValue('vcm', v);
+}
+function setLed(k, v) {
+  $(k).value = v; $(k + 'Val').textContent = v;
+  if (connected()) setValue(k, Number(v));
+}
+
+function onBattery(dv) {
+  if (dv.byteLength !== 2) return;
+  const pct = Math.min(dv.getUint8(0), 100), charging = dv.getUint8(1) !== 0;
+  $('model').innerHTML = `Model: ${white ? 'White' : 'Blue'} &nbsp;|&nbsp; Battery: ${pct}%${charging ? ' (charging)' : ''}`;
+}
+
+async function refreshInfo() {
+  const ver = await chFwVer.readValue();
+  const det = await chBatDet.readValue();
+  const st = await chSelf.readValue();
+  const lines = [`Firmware: ${ver.getUint8(0)}.${ver.getUint8(1)}`];
+  if (det.byteLength === 14) {
+    const u16 = i => det.getUint16(i, false), s16 = i => det.getInt16(i, false);
+    lines.push(`Voltage: ${u16(0)}`, `Current: ${s16(2)}`, `Power: ${s16(4)}`,
+      `Battery temp: ${(u16(6) / 10 - 273.15).toFixed(1)} °C`,
+      `Internal temp: ${(u16(8) / 10 - 273.15).toFixed(1)} °C`,
+      `State of health: ${u16(10)}`, `Cycle count: ${u16(12)}`);
+  }
+  if (st.byteLength === 3) {
+    ['battery', 'lights', 'motor'].forEach((n, i) => lines.push(`Self-test ${n}: ${st.getUint8(i) ? 'FAILED' : 'ok'}`));
+  }
+  $('info').textContent = lines.join('\n');
+  onBattery(await chBat.readValue());
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    setStatus('Web Bluetooth is not available. Open this page in the Bluefy browser (Safari cannot do Bluetooth LE).');
+    return;
+  }
+  try {
+    const optionalServices = [UUID.control, UUID.info, 'battery_service'];
+    const opts = $('showAll').checked
+      ? { acceptAllDevices: true, optionalServices }
+      : { filters: NAME_PREFIXES.map(namePrefix => ({ namePrefix })), optionalServices };
+    setStatus('Choose your microPeek...');
+    device = await navigator.bluetooth.requestDevice(opts);
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    setStatus('Connecting...');
+    const server = await device.gatt.connect();
+    const ctl = await server.getPrimaryService(UUID.control);
+    const info = await server.getPrimaryService(UUID.info);
+    chLed = await ctl.getCharacteristic(UUID.led);
+    chVcm = await ctl.getCharacteristic(UUID.vcm);
+    chFwId = await info.getCharacteristic(UUID.fwId);
+    chFwVer = await info.getCharacteristic(UUID.fwVer);
+    chBat = await info.getCharacteristic(UUID.batState);
+    chBatDet = await info.getCharacteristic(UUID.batDetails);
+    chSelf = await info.getCharacteristic(UUID.selftest);
+    const fw = await chFwId.readValue();
+    white = (fw.getUint8(0) * 256 + fw.getUint8(1)) === 3;
+    chBat.addEventListener('characteristicvaluechanged', e => onBattery(e.target.value));
+    await chBat.startNotifications();
+    // Same initial state as the official app
+    await write(chLed, new Uint8Array(12));
+    await write(chVcm, new Uint8Array(2));
+    pending = {}; led.bf = led.df = led.uv = 0;
+    setLens(0);
+    for (const k of ['bf', 'df', 'uv']) { $(k).value = 0; $(k + 'Val').textContent = 0; }
+    setBleControls(true);
+    await refreshInfo();
+    setStatus('Connected to ' + (device.name || 'device'));
+  } catch (e) {
+    setStatus('Connect failed: ' + e.message);
+    setBleControls(connected());
+  }
+}
+
+function onDisconnected() {
+  stackRunning = false;
+  setBleControls(false);
+  $('model').innerHTML = 'Model: - &nbsp;|&nbsp; Battery: -';
+  $('info').textContent = '';
+  setStatus('Disconnected');
+}
+
+async function disconnect() {
+  stackRunning = false;
+  if (connected()) {
+    try { await write(chLed, new Uint8Array(12)); } catch (e) {}
+    device.gatt.disconnect();
+  }
+}
+
+// ---------- camera ----------
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus('Camera not available in this browser - use "Native camera" instead.');
+    return;
+  }
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+      facingMode: { ideal: facing }, width: { ideal: 4032 }, height: { ideal: 3024 } } });
+  } catch (e) {
+    stream = null;
+    setStatus('Camera error: ' + e.name + ' ' + e.message + ' - try "Native camera".');
+    $('shoot').disabled = true; updateStackButton();
+    return;
+  }
+  const v = $('video');
+  v.srcObject = stream;
+  await v.play();
+  $('shoot').disabled = false;
+  updateStackButton();
+  setStatus(`Camera ready ${v.videoWidth}x${v.videoHeight}`);
+  try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+
+function baseName() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  const vcm = connected() ? String($('vcm').value).padStart(4, '0') : 'NA';
+  return `${ts}_vcm${vcm}_bf${led.bf}_df${led.df}_uv${led.uv}`;
+}
+
+async function grabFrame() {
+  const v = $('video');
+  if (!stream || !v.videoWidth) throw new Error('camera not running');
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.95));
+  return new File([blob], baseName() + '.jpg', { type: 'image/jpeg' });
+}
+
+function addPicture(file) {
+  let name = file.name, n = 1;
+  while (gallery.some(g => g.file.name === name)) name = file.name.replace(/(\.\w+)$/, `_${n++}$1`);
+  if (name !== file.name) file = new File([file], name, { type: file.type });
+  const url = URL.createObjectURL(file);
+  gallery.push({ file, url });
+  const fig = document.createElement('figure');
+  fig.innerHTML = `<img src="${url}" alt=""><figcaption>${name}</figcaption>`;
+  fig.querySelector('img').onclick = () => saveFiles([file]);
+  $('gallery').prepend(fig);
+  $('count').textContent = `(${gallery.length})`;
+  $('shareAll').disabled = $('clear').disabled = false;
+}
+
+async function saveFiles(files) {
+  try {
+    if (navigator.canShare && navigator.canShare({ files })) {
+      await navigator.share({ files });
+      return;
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+  }
+  for (const f of files) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+    await sleep(300);
+  }
+}
+
+async function shoot() {
+  try {
+    addPicture(await grabFrame());
+    setStatus(`Saved picture ${gallery.length}`);
+  } catch (e) { setStatus('Capture failed: ' + e.message); }
+}
+
+async function stack() {
+  if (stackRunning) { stackRunning = false; return; }
+  const a = Math.max(0, Math.min(+$('stFrom').value, +$('stTo').value));
+  const b = Math.min(VCM_MAX, Math.max(+$('stFrom').value, +$('stTo').value));
+  const step = Math.max(1, +$('stStep').value), settle = Math.max(0, +$('stSettle').value);
+  const pos = []; for (let v = a; v <= b; v += step) pos.push(v);
+  if (pos[pos.length - 1] !== b) pos.push(b);
+  stackRunning = true; $('stack').textContent = 'Stop stack'; $('stack').classList.add('red');
+  try {
+    for (let i = 0; i < pos.length && stackRunning && connected(); i++) {
+      setStatus(`Stack ${i + 1}/${pos.length}: lens ${pos[i]}`);
+      setLens(pos[i]);
+      await writesDone();
+      await sleep(settle);
+      addPicture(await grabFrame());
+    }
+    setStatus(stackRunning ? `Focus stack done: ${pos.length} pictures` : 'Focus stack stopped');
+  } catch (e) {
+    setStatus('Stack failed: ' + e.message);
+  } finally {
+    stackRunning = false;
+    $('stack').textContent = 'Start stack'; $('stack').classList.remove('red');
+    updateStackButton();
+  }
+}
+
+// ---------- wiring ----------
+$('connect').onclick = connect;
+$('disconnect').onclick = disconnect;
+$('refresh').onclick = () => refreshInfo().catch(e => setStatus('Refresh failed: ' + e.message));
+$('vcm').oninput = e => setLens(e.target.value, false);
+document.querySelectorAll('.step').forEach(b => b.onclick = () => setLens(+$('vcm').value + +b.dataset.d));
+for (const k of ['bf', 'df', 'uv']) $(k).oninput = e => setLed(k, +e.target.value);
+$('ledsOff').onclick = () => ['bf', 'df', 'uv'].forEach(k => setLed(k, 0));
+$('camStart').onclick = startCamera;
+$('camFlip').onclick = () => { facing = facing === 'environment' ? 'user' : 'environment'; startCamera(); };
+$('shoot').onclick = shoot;
+$('native').onclick = () => $('nativeInput').click();
+$('nativeInput').onchange = e => {
+  const f = e.target.files[0];
+  if (f) addPicture(new File([f], baseName() + '.jpg', { type: f.type }));
+  e.target.value = '';
+};
+$('stack').onclick = stack;
+$('shareAll').onclick = () => saveFiles(gallery.map(g => g.file));
+$('clear').onclick = () => {
+  gallery.forEach(g => URL.revokeObjectURL(g.url)); gallery.length = 0;
+  $('gallery').innerHTML = ''; $('count').textContent = '';
+  $('shareAll').disabled = $('clear').disabled = true;
+};
+if (!navigator.bluetooth) setStatus('Web Bluetooth not available - open this page in the Bluefy browser.');
+</script>
+</body>
+</html>
